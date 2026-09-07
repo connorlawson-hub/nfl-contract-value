@@ -58,6 +58,43 @@ ball to come your way, which is largely outside the player's control. A low scor
 for a corner often means "avoided", not "bad". The app shows a warning whenever
 those groups are in view.
 
+## Teams
+
+A team's **contract efficiency** is every player's value score averaged together,
+weighted by his share of the team's cap — a bad $40M contract has to hurt far more
+than a bad $2M one — then centred on the league average for that season, so 0 is an
+average front office that year.
+
+The centring matters. `value_score = production percentile − pay percentile`, so a
+player in the 95th percentile of pay can score at most +5 while one in the 5th can
+reach +95. The metric is asymmetrically bounded, and cap-weighting deliberately
+upweights the expensive players who structurally can't score high — the raw team
+average comes out negative for 95% of team-seasons. That bias is identical for
+every team, so the ranking is sound, but the raw zero point is meaningless.
+
+**It describes the season you just watched, and does not predict the next one.**
+Measured over 2019–2025 (223 team-seasons):
+
+| Relationship | r | Variance explained |
+| --- | --- | --- |
+| Efficiency vs wins, same season | +0.55 | 30% |
+| Efficiency vs point differential, same season | +0.51 | 26% |
+| Efficiency vs **next** season's wins | +0.19 | 4% |
+| Prior wins vs next season's wins (baseline) | +0.38 | 15% |
+
+Adding efficiency to a model that already knows last year's record raises R² from
+0.147 to 0.147 — it contributes nothing. Partial correlation controlling for record
+is −0.02 (p = 0.84).
+
+**Why it doesn't carry over: the market corrects.** A bargain is temporary by
+construction. Of player-seasons scoring +30 or better, only 32% were still a bargain
+the next year; 75% saw their cap charge rise and the median more than doubled. Of
+those scoring −30 or worse, 59% saw their cap charge fall. Team efficiency itself
+barely persists year to year (r = +0.15).
+
+Only about **50% of each team's salary cap** is graded, since offensive linemen,
+specialists and players below the usage minimums aren't scored.
+
 ## Data
 
 All from [nflverse](https://github.com/nflverse/nflverse-data/releases):
@@ -68,6 +105,7 @@ All from [nflverse](https://github.com/nflverse/nflverse-data/releases):
 | `stats_player` | `stats_player_week_<year>.csv.gz` | weekly box score + EPA, offense and defense |
 | `snap_counts` | `snap_counts_<year>.csv.gz` | playing time |
 | `players` | `players.csv.gz` | ID crosswalk and NGS positions |
+| `schedules` | `games.csv` | team records and point differentials |
 
 **Two things that will bite you if you don't know them:**
 
@@ -95,6 +133,7 @@ To rebuild or extend the data:
 ```bash
 python src/build_data.py --seasons 2019 2025   # downloads + joins, ~1 min
 python src/value_model.py                      # scores everything
+python src/team_model.py                       # rolls up to team level
 ```
 
 Downloads are cached in `data/raw/`; delete it to force a refresh.
@@ -106,6 +145,7 @@ See **[DEPLOY.md](DEPLOY.md)** for step-by-step hosting instructions.
 ```
 src/build_data.py    fetch nflverse data, join contracts to stats -> player_seasons.parquet
 src/value_model.py   production composites, percentiles, value scores -> value_scores.parquet
+src/team_model.py    cap-weighted team efficiency + records -> team_seasons.parquet
 app.py               Streamlit UI
 ```
 
