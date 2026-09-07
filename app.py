@@ -8,7 +8,13 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
-DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "value_scores.parquet")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+DATA = os.path.join(_HERE, "data", "value_scores.parquet")
+TEAM_DATA = os.path.join(_HERE, "data", "team_seasons.parquet")
+
+# Chart palette (validated: blue<->red separate cleanly under all colour-vision
+# types; red<->green would not).
+POS, NEG, INK, GRID = "#2a78d6", "#e34948", "#52514e", "#c3c2b7"
 OFFENSE = ["QB", "RB", "WR", "TE"]
 DEFENSE = ["EDGE", "DL", "LB", "CB", "S"]
 
@@ -19,7 +25,10 @@ st.set_page_config(page_title="NFL Contract Value", page_icon="🏈", layout="wi
 # Hand-rolled instead of Styler.background_gradient, which pulls in matplotlib
 # (~50MB) purely to interpolate three colours. This keeps the deploy small and
 # the build fast.
-_STOPS = [(-70, (215, 48, 39)), (0, (255, 255, 191)), (70, (26, 152, 80))]
+# Blue (good) <-> red (bad) with a neutral grey midpoint, rather than the
+# obvious red-to-green: red vs green is the single worst pair for colourblind
+# readers, and blue vs red separates cleanly for every kind of colour vision.
+_STOPS = [(-70, (227, 73, 72)), (0, (240, 239, 236)), (70, (42, 120, 214))]
 
 
 def value_color(v):
@@ -47,7 +56,13 @@ def load():
     return df
 
 
+@st.cache_data
+def load_teams():
+    return pd.read_parquet(TEAM_DATA)
+
+
 df = load()
+teams = load_teams()
 
 st.title("🏈 NFL Contract Value")
 st.caption(
@@ -96,8 +111,8 @@ if hide_low_conf:
 if search:
     d = d[d.player.str.contains(search, case=False, na=False)]
 
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["Rankings", "Production vs pay", "Injury impact", "Player detail"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["Rankings", "Production vs pay", "Injury impact", "Player detail", "Teams"])
 
 # ----------------------------------------------------------------- rankings
 with tab1:
@@ -247,3 +262,129 @@ with tab4:
                              "value_score": "Value (totals)",
                              "value_score_rate": "Value (per game)", "verdict": "Verdict"})
             .round(0), use_container_width=True, hide_index=True)
+
+# ------------------------------------------------------------------- teams
+with tab5:
+    ts = teams[teams.season == season].copy()
+    hist = teams.dropna(subset=["efficiency", "wins"])
+
+    st.subheader(f"Which front offices got the most for their money in {season}?")
+    st.caption(
+        "**Team efficiency** is every player's value score averaged together, weighted "
+        "by his share of the team's cap — so a bad \\$40M contract counts far more than "
+        "a bad \\$2M one — then centred on the league average for that season. "
+        "**0 = an average front office that year.** Positive means the roster "
+        "outproduced its cost relative to the rest of the league.")
+
+    if len(ts):
+        best, worst = ts.nlargest(1, "efficiency").iloc[0], ts.nsmallest(1, "efficiency").iloc[0]
+        r_now = np.corrcoef(hist[hist.season == season].efficiency,
+                            hist[hist.season == season].wins)[0, 1]
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Most efficient", best.team, f"{best.efficiency:+.1f} · {best.record}")
+        k2.metric("Least efficient", worst.team, f"{worst.efficiency:+.1f} · {worst.record}")
+        k3.metric(f"Efficiency vs wins, {season}", f"r = {r_now:+.2f}")
+        k4.metric("Cap graded", f"{ts.cap_coverage.median():.0f}%",
+                  "of each team's cap", delta_color="off")
+
+    # --- diverging bar: every team, ranked -------------------------------
+    st.markdown("##### Every team, ranked")
+    order = ts.sort_values("efficiency", ascending=False).team.tolist()
+    bars = alt.Chart(ts).mark_bar(cornerRadiusEnd=4, height=14).encode(
+        y=alt.Y("team:N", sort=order, title=None,
+                axis=alt.Axis(labelFontSize=11, grid=False, labelOverlap=False,
+                              labelPadding=6, tickCount=32)),
+        x=alt.X("efficiency:Q", title="Efficiency vs league average that season",
+                axis=alt.Axis(gridColor=GRID, gridOpacity=0.4)),
+        color=alt.condition(alt.datum.efficiency > 0, alt.value(POS), alt.value(NEG)),
+        tooltip=[alt.Tooltip("team:N", title="Team"),
+                 alt.Tooltip("record:N", title="Record"),
+                 alt.Tooltip("efficiency:Q", title="Efficiency", format="+.1f"),
+                 alt.Tooltip("point_diff:Q", title="Point diff", format="+.0f"),
+                 alt.Tooltip("best_deal:N", title="Best deal"),
+                 alt.Tooltip("worst_deal:N", title="Worst deal")])
+    zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color=INK, size=1).encode(x="x:Q")
+    st.altair_chart((bars + zero).properties(height=560), use_container_width=True)
+
+    # --- scatter vs wins --------------------------------------------------
+    st.markdown("##### Efficiency against actual record")
+    st.caption("Each label is a team. The line is the trend across all "
+               f"{len(hist)} team-seasons from {int(hist.season.min())}–{int(hist.season.max())}.")
+
+    show_all = st.checkbox("Show all seasons, not just this one", value=False)
+    plot = hist if show_all else hist[hist.season == season]
+    yfield = st.radio("Compare against", ["Wins", "Point differential"],
+                      horizontal=True, label_visibility="collapsed")
+    ycol, ytitle = ("wins", "Wins") if yfield == "Wins" else ("point_diff", "Point differential")
+
+    pts = alt.Chart(plot).mark_text(fontSize=11, fontWeight=600).encode(
+        x=alt.X("efficiency:Q", title="Contract efficiency (vs league average)",
+                axis=alt.Axis(gridColor=GRID, gridOpacity=0.4)),
+        y=alt.Y(f"{ycol}:Q", title=ytitle, scale=alt.Scale(zero=False),
+                axis=alt.Axis(gridColor=GRID, gridOpacity=0.4)),
+        text="team:N",
+        color=alt.condition(alt.datum.efficiency > 0, alt.value(POS), alt.value(NEG)),
+        tooltip=["team:N", "season:O", alt.Tooltip("record:N", title="Record"),
+                 alt.Tooltip("efficiency:Q", format="+.1f"),
+                 alt.Tooltip("point_diff:Q", format="+.0f")])
+    trend = alt.Chart(hist).transform_regression("efficiency", ycol).mark_line(
+        color=INK, strokeDash=[5, 4], size=2).encode(x="efficiency:Q", y=f"{ycol}:Q")
+    st.altair_chart((pts + trend).properties(height=460), use_container_width=True)
+
+    rr = np.corrcoef(hist.efficiency, hist[ycol])[0, 1]
+    st.caption(f"Across all seasons: **r = {rr:+.2f}**, so contract efficiency explains "
+               f"about **{rr**2*100:.0f}%** of the variation in {ytitle.lower()}.")
+
+    # --- the prediction question -----------------------------------------
+    st.divider()
+    st.markdown("##### Can this predict next season?")
+
+    pred = teams.dropna(subset=["efficiency", "next_wins"])
+    r_pred = np.corrcoef(pred.efficiency, pred.next_wins)[0, 1]
+    r_base = np.corrcoef(pred.wins, pred.next_wins)[0, 1]
+
+    st.warning(
+        f"**Mostly no — and that's the interesting part.**\n\n"
+        f"This season's efficiency correlates with *next* season's wins at only "
+        f"**r = {r_pred:+.2f}** (about {r_pred**2*100:.0f}% of the variation). Simply "
+        f"knowing a team's record this year predicts next year better "
+        f"(**r = {r_base:+.2f}**), and once you know the record, efficiency adds "
+        f"essentially nothing on top of it.")
+
+    st.markdown(
+        "**Why it doesn't carry over: the market corrects.** A bargain is temporary "
+        "by construction — good players on cheap deals get paid. Across 2019–2025:")
+    c1, c2 = st.columns(2)
+    c1.info("**Of players scoring +30 or better** (a bargain), only **32%** were still "
+            "a bargain the next season. **75%** saw their cap charge rise, and the "
+            "median more than doubled.")
+    c2.info("**Of players scoring −30 or worse** (an overpay), **59%** saw their cap "
+            "charge fall the next season — cut, restructured or traded away.")
+    st.caption(
+        "Team efficiency itself barely persists year to year (r = +0.15). So read this "
+        "as a scoreboard for the season that just happened, and as a guide to which "
+        "individual contracts are working — not as a forecast.")
+
+    # --- the table --------------------------------------------------------
+    st.divider()
+    st.markdown(f"##### {season} in full")
+    tcols = {"efficiency_rank": "Rank", "team": "Team", "record": "Record",
+             "wins": "W", "point_diff": "Pt diff", "efficiency": "Efficiency",
+             "n_bargains": "Bargains", "n_overpaid": "Overpays",
+             "best_deal": "Best deal", "worst_deal": "Worst deal",
+             "scored_cap": "Cap graded ($M)", "cap_coverage": "% of cap graded"}
+    tt = ts.sort_values("efficiency", ascending=False)[list(tcols)].rename(columns=tcols)
+    st.dataframe(
+        tt.style.map(value_color, subset=["Efficiency"])
+          .format({"Efficiency": "{:+.1f}", "Pt diff": "{:+.0f}",
+                   "Cap graded ($M)": "{:.0f}", "% of cap graded": "{:.0f}%",
+                   "W": "{:.0f}"}),
+        use_container_width=True, height=520, hide_index=True)
+
+    st.caption(
+        f"**A real limitation:** only about **{ts.cap_coverage.median():.0f}% of each "
+        "team's salary cap** is graded here. Offensive linemen, kickers and punters "
+        "aren't scored at all, and neither are players below the usage minimums. A "
+        "team that spent heavily on a great offensive line gets no credit for it.")
+    st.download_button("Download team data as CSV", tt.to_csv(index=False),
+                       f"nfl_team_efficiency_{season}.csv", "text/csv")
