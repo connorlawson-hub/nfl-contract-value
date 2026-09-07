@@ -15,6 +15,31 @@ DEFENSE = ["EDGE", "DL", "LB", "CB", "S"]
 st.set_page_config(page_title="NFL Contract Value", page_icon="🏈", layout="wide")
 
 
+# --- value-score colouring -------------------------------------------------
+# Hand-rolled instead of Styler.background_gradient, which pulls in matplotlib
+# (~50MB) purely to interpolate three colours. This keeps the deploy small and
+# the build fast.
+_STOPS = [(-70, (215, 48, 39)), (0, (255, 255, 191)), (70, (26, 152, 80))]
+
+
+def value_color(v):
+    """Red -> yellow -> green background for a value score, with readable text."""
+    if pd.isna(v):
+        return ""
+    v = max(-70, min(70, float(v)))
+    for (x0, c0), (x1, c1) in zip(_STOPS, _STOPS[1:]):
+        if x0 <= v <= x1:
+            t = 0 if x1 == x0 else (v - x0) / (x1 - x0)
+            r, g, b = (round(a + (bb - a) * t) for a, bb in zip(c0, c1))
+            break
+    else:
+        r, g, b = _STOPS[-1][1]
+    # Dark backgrounds need light text.
+    luma = 0.299 * r + 0.587 * g + 0.114 * b
+    fg = "#111" if luma > 150 else "#fff"
+    return f"background-color: rgb({r},{g},{b}); color: {fg};"
+
+
 @st.cache_data
 def load():
     df = pd.read_parquet(DATA)
@@ -95,7 +120,7 @@ with tab1:
 
     st.dataframe(
         dd[list(cols)].rename(columns=cols).style
-          .background_gradient(cmap="RdYlGn", subset=["Value score"], vmin=-70, vmax=70)
+          .map(value_color, subset=["Value score"])
           .format({"Cap hit ($M)": "{:.1f}", "% of cap": "{:.2f}", "Avail %": "{:.0f}",
                    "Production %ile": "{:.0f}", "Pay %ile": "{:.0f}",
                    "Value score": "{:+.0f}", "Surplus ($M)": "{:+.1f}",
