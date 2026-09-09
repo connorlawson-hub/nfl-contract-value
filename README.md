@@ -142,12 +142,25 @@ See **[DEPLOY.md](DEPLOY.md)** for step-by-step hosting instructions.
 
 ## Layout
 
+The site has two separate sections, chosen from the sidebar. **Player Value**
+ranks individual contracts; **Team Efficiency** rolls those same scores up to
+the front office. Each page has its own filters — position and cap-hit filters
+are player-level and don't appear on the Teams page.
+
 ```
+app.py               entry point: page config + sidebar navigation
+shared.py            data loading, palette, value-score colouring
+views/players.py     Player Value page  (rankings, scatter, injury, detail)
+views/teams.py       Team Efficiency page (league table, vs record, prediction)
+
 src/build_data.py    fetch nflverse data, join contracts to stats -> player_seasons.parquet
 src/value_model.py   production composites, percentiles, value scores -> value_scores.parquet
 src/team_model.py    cap-weighted team efficiency + records -> team_seasons.parquet
-app.py               Streamlit UI
 ```
+
+Navigation uses `st.navigation`, which needs Streamlit 1.36 or newer. Note the
+page files live in `views/`, not `pages/` — a folder called `pages/` triggers
+Streamlit's older automatic multipage mode and would conflict.
 
 ## The model
 
